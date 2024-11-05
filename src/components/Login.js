@@ -5,6 +5,7 @@ import { login } from "../api/auth";
 
 function Login() {
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState(""); // New state for email
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
@@ -14,12 +15,13 @@ function Login() {
     event.preventDefault();
     setError("");
     try {
-      const user = await login(username, password);
+      // Updated to include email in login function
+      const user = await login(username, email, password);
       if (user) {
         console.log("Login successful:", user);
         navigate("/dashboard");
       } else {
-        setError("Invalid username or password");
+        setError("Invalid credentials");
       }
     } catch (err) {
       console.error("Login error:", err);
@@ -57,6 +59,25 @@ function Login() {
                 placeholder="Enter your username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
+              />
+            </div>
+            {/* New Email Field */}
+            <div>
+              <label
+                htmlFor="email"
+                className="block text-sm font-medium text-blue-700"
+              >
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                required
+                className="mt-1 block w-full px-3 py-2 bg-white border border-blue-300 rounded-md text-sm shadow-sm placeholder-gray-400
+                          focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="Enter your email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
               />
             </div>
             <div>

@@ -1,66 +1,75 @@
-// src/api/auth.js
+// auth.js
 
-export const login = async (username, password) => {
+const API_BASE_URL = "http://localhost:5000"; // Adjust this to match your backend URL
+
+export const signup = async (username, email, password) => {
   try {
-    const response = await fetch("/api/login", {
+    const response = await fetch(`${API_BASE_URL}/api/signup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        username,
+        email,
+        password,
+      }),
     });
-    if (response.ok) {
-      const data = await response.json();
-      return data.user;
-    }
-    const errorData = await response.json();
-    throw new Error(errorData.message || "Login failed");
-  } catch (error) {
-    console.error("Login error:", error);
-    throw error;
-  }
-};
 
-export const signup = async (username, password) => {
-  try {
-    const response = await fetch("/api/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    if (response.ok) {
-      const data = await response.json();
-      return data.user;
-    }
-    const errorData = await response.json();
-    throw new Error(errorData.message || "Signup failed");
-  } catch (error) {
-    console.error("Signup error:", error);
-    throw error;
-  }
-};
-
-export const logout = async () => {
-  try {
-    const response = await fetch("/api/logout", { method: "POST" });
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(errorData.message || "Logout failed");
+      throw new Error(errorData.message || "Signup failed");
     }
+
+    const responseData = await response.json();
+
+    // Send welcome email
+    try {
+      await fetch(`${API_BASE_URL}/api/send-welcome-email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          username,
+        }),
+      });
+    } catch (emailError) {
+      console.error("Error sending welcome email:", emailError);
+      // Continue with signup even if email fails
+    }
+
+    return responseData;
   } catch (error) {
-    console.error("Logout error:", error);
-    throw error;
+    console.error("Signup error:", error.message);
+    throw new Error(error.message);
   }
 };
 
-export const getUser = async () => {
+export const login = async (username, email, password) => {
   try {
-    const response = await fetch("/api/user");
-    if (response.ok) {
-      const data = await response.json();
-      return data.user;
+    const response = await fetch(`${API_BASE_URL}/api/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        username,
+        email,
+        password,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || "Login failed");
     }
-    return null;
+
+    const responseData = await response.json();
+    return responseData;
   } catch (error) {
-    console.error("Get user error:", error);
-    return null;
+    console.error("Login error:", error.message);
+    throw new Error(error.message);
   }
 };

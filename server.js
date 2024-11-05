@@ -3,6 +3,7 @@ const session = require("express-session");
 const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
 const path = require("path");
+const nodemailer = require("nodemailer");
 const cors = require("cors");
 const { Pool } = require("pg");
 require("dotenv").config();
@@ -18,6 +19,15 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
 });
 
+// Email configuration
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -25,17 +35,19 @@ app.use(express.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(
   session({
-    secret: "your_session_secret",
+    secret: process.env.SESSION_SECRET || "your_session_secret",
     resave: false,
     saveUninitialized: false,
     cookie: {
       secure: process.env.NODE_ENV === "production",
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      httpOnly: true,
+      sameSite: "lax", // Adjust to "strict" or "none" as needed
+      maxAge: 24 * 60 * 60 * 1000,
     },
   })
 );
 
-// Serve static files from the React app in production
+// Serve static files in production
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "build")));
 }
@@ -44,6 +56,7 @@ if (process.env.NODE_ENV === "production") {
 pool.query("SELECT NOW()", (err, res) => {
   if (err) {
     console.error("Database connection error:", err);
+    process.exit(1); // Exit if the database connection fails
   } else {
     console.log("Database connected successfully");
   }
@@ -51,26 +64,61 @@ pool.query("SELECT NOW()", (err, res) => {
 
 // Authentication routes
 app.post("/api/signup", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, email, password } = req.body;
+
   try {
+    // Check if user already exists
     const userCheck = await pool.query(
-      'SELECT * FROM "User" WHERE username = $1',
-      [username]
+      'SELECT * FROM "User" WHERE username = $1 OR email = $2',
+      [username, email]
     );
+
     if (userCheck.rows.length > 0) {
-      return res.status(400).json({ message: "Username already exists" });
+      return res
+        .status(400)
+        .json({ message: "Username or email already exists" });
     }
-    const hashedPassword = bcrypt.hashSync(password, 10);
-    const newUser = await pool.query(
-      'INSERT INTO "User" (username, password) VALUES ($1, $2) RETURNING id, username',
-      [username, hashedPassword]
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create new user
+    const result = await pool.query(
+      'INSERT INTO "User" (username, email, password) VALUES ($1, $2, $3) RETURNING id, username, email',
+      [username, email, hashedPassword]
     );
+
+    // Send welcome email
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: "Welcome to PESU Fest!",
+        html: `
+          <h1>Welcome to PESU Fest!</h1>
+          <p>Thank you for signing up, ${username}!</p>
+          <p>We're excited to have you join us for our upcoming events.</p>
+        `,
+      });
+    } catch (emailError) {
+      console.error("Error sending welcome email:", emailError);
+      // Continue with signup even if email fails
+    }
+
+    // Start session
     req.session.user = {
-      id: newUser.rows[0].id,
-      username: newUser.rows[0].username,
+      id: result.rows[0].id,
+      username: result.rows[0].username,
+      email: result.rows[0].email,
     };
-    res.json({
-      user: { id: newUser.rows[0].id, username: newUser.rows[0].username },
+
+    res.status(201).json({
+      message: "User created successfully",
+      user: {
+        id: result.rows[0].id,
+        username: result.rows[0].username,
+        email: result.rows[0].email,
+      },
     });
   } catch (error) {
     console.error("Error in signup:", error);
@@ -79,16 +127,29 @@ app.post("/api/signup", async (req, res) => {
 });
 
 app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, email, password } = req.body;
+
   try {
+    // Check user by both username and email
     const result = await pool.query(
-      'SELECT * FROM "User" WHERE username = $1',
-      [username]
+      'SELECT * FROM "User" WHERE username = $1 AND email = $2',
+      [username, email]
     );
+
     const user = result.rows[0];
-    if (user && bcrypt.compareSync(password, user.password)) {
-      req.session.user = { id: user.id, username: user.username };
-      res.json({ user: { id: user.id, username: user.username } });
+    if (user && (await bcrypt.compare(password, user.password))) {
+      req.session.user = {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+      };
+      res.json({
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+        },
+      });
     } else {
       res.status(401).json({ message: "Invalid credentials" });
     }
@@ -97,7 +158,6 @@ app.post("/api/login", async (req, res) => {
     res.status(500).json({ message: "An error occurred during login" });
   }
 });
-
 app.post("/api/logout", (req, res) => {
   req.session.destroy((err) => {
     if (err) {
@@ -108,7 +168,6 @@ app.post("/api/logout", (req, res) => {
     res.json({ message: "Logged out successfully" });
   });
 });
-
 app.get("/api/user", (req, res) => {
   if (req.session.user) {
     res.json({ user: req.session.user });
