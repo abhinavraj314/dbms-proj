@@ -1,33 +1,49 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Eye, EyeOff, Sparkles } from "lucide-react";
-import { login } from "../api/auth";
+import { Eye, EyeOff, Sparkles, AlertCircle } from "lucide-react";
 
 function Login() {
   const [username, setUsername] = useState("");
-  const [email, setEmail] = useState(""); // New state for email
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError("");
+    setIsLoading(true);
+
     try {
-      // Updated to include email in login function
-      const user = await login(username, email, password);
-      if (user) {
-        console.log("Login successful:", user);
-        navigate("/dashboard");
-      } else {
-        setError("Invalid credentials");
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: username.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Login failed");
       }
+
+      console.log("Login successful:", data.user);
+      navigate("/dashboard");
     } catch (err) {
       console.error("Login error:", err);
       setError(
         err.message || "An error occurred during login. Please try again."
       );
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -40,7 +56,14 @@ function Login() {
           </h2>
           <p className="text-blue-600">Register for various events!</p>
         </div>
-        {error && <p className="text-red-500 text-center mb-4">{error}</p>}
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 flex-shrink-0" />
+            <p className="text-sm">{error}</p>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
@@ -61,7 +84,6 @@ function Login() {
                 onChange={(e) => setUsername(e.target.value)}
               />
             </div>
-            {/* New Email Field */}
             <div>
               <label
                 htmlFor="email"
@@ -114,10 +136,16 @@ function Login() {
           </div>
           <button
             type="submit"
-            className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 mt-6"
+            disabled={isLoading}
+            className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Sparkles className="mr-2 h-4 w-4" />
-            Login
+            {isLoading ? (
+              "Logging in..."
+            ) : (
+              <>
+                <Sparkles className="mr-2 h-4 w-4" /> Login
+              </>
+            )}
           </button>
         </form>
         <div className="mt-8 text-sm text-center">

@@ -1,71 +1,83 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { format } from "date-fns";
-import { Calendar, Clock, MapPin } from "lucide-react";
-
-const events = [
-  {
-    id: 1,
-    name: "Code Quest Hackathon",
-    date: "2024-02-15",
-    time: "09:00",
-    venue: "Tech Hub - Block 3",
-  },
-  {
-    id: 2,
-    name: "AI/ML Symposium",
-    date: "2024-02-15",
-    time: "10:30",
-    venue: "Seminar Hall 1",
-  },
-  {
-    id: 3,
-    name: "Design Thinking Workshop",
-    date: "2024-02-15",
-    time: "15:00",
-    venue: "Creative Studio",
-  },
-  {
-    id: 4,
-    name: "Cyber Security Workshop",
-    date: "2024-02-16",
-    time: "09:30",
-    venue: "Security Lab",
-  },
-  {
-    id: 5,
-    name: "Tech Talks 2024",
-    date: "2024-02-16",
-    time: "11:00",
-    venue: "Main Auditorium",
-  },
-  {
-    id: 6,
-    name: "Robotics Workshop",
-    date: "2024-02-16",
-    time: "14:00",
-    venue: "Robotics Lab",
-  },
-];
+import { Calendar, Clock, MapPin, Loader2 } from "lucide-react";
 
 function EventList({ onEventSelect }) {
+  const [events, setEvents] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const fetchEvents = async () => {
+      try {
+        const response = await fetch("/api/events", {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          credentials: "include", // if you're using sessions
+        });
+
+        if (!response.ok) {
+          const errorData = await response.text();
+          console.error("Error response:", errorData);
+          throw new Error(`Failed to fetch events: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+          throw new Error("Invalid data format received");
+        }
+
+        setEvents(data);
+      } catch (error) {
+        console.error("Error fetching events:", error);
+        setError(error.message);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchEvents();
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="h-8 w-8 animate-spin text-white" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-center p-8">
+        <p className="text-red-400">Error loading events: {error}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {events.map((event) => (
         <div
           key={event.id}
           className="bg-blue-600 rounded-lg p-4 hover:bg-blue-500 transition-colors cursor-pointer"
-          onClick={() => onEventSelect(event.name)}
+          onClick={() => onEventSelect(event.id)}
         >
-          <h3 className="text-xl font-bold mb-2 text-white">{event.name}</h3>
+          <h3 className="text-xl font-bold mb-2 text-white">
+            {event.eventName}
+          </h3>
           <div className="space-y-2 text-blue-100">
             <div className="flex items-center">
               <Calendar className="w-4 h-4 mr-2" />
-              <span>{format(new Date(event.date), "MMMM d, yyyy")}</span>
+              <span>{format(new Date(event.eventDate), "MMMM d, yyyy")}</span>
             </div>
             <div className="flex items-center">
               <Clock className="w-4 h-4 mr-2" />
               <span>
-                {format(new Date(`1970-01-01T${event.time}`), "h:mm a")}
+                {format(new Date(`1970-01-01T${event.eventTime}`), "h:mm a")}
               </span>
             </div>
             <div className="flex items-center">

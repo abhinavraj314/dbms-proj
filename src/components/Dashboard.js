@@ -1,18 +1,13 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { LogOut, Trash2, Filter, Download, AlertCircle } from "lucide-react";
+import { LogOut, Trash2, Download, AlertCircle } from "lucide-react";
 import EventList from "./EventList";
 
-const userTypes = ["Student", "Faculty", "Guest"];
-
 function Dashboard() {
-  const [userType, setUserType] = useState("");
-  const [name, setName] = useState("");
-  const [selectedEvent, setSelectedEvent] = useState("");
-  const [registeredUsers, setRegisteredUsers] = useState([]);
+  const [eventId, setEventId] = useState(null);
+  const [registeredEvents, setRegisteredEvents] = useState([]);
   const [clearLoading, setClearLoading] = useState(false);
   const [isEventDialogOpen, setIsEventDialogOpen] = useState(false);
-  const [filterType, setFilterType] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -29,7 +24,8 @@ function Dashboard() {
       const response = await fetch("/api/registrations");
       if (response.ok) {
         const data = await response.json();
-        setRegisteredUsers(data);
+        setRegisteredEvents(data);
+        console.log(data);
       } else {
         throw new Error("Failed to fetch registrations");
       }
@@ -41,34 +37,29 @@ function Dashboard() {
     }
   };
 
-  const filteredUsers = registeredUsers.filter((user) => {
-    const matchesType = filterType === "all" || user.type === filterType;
-    const matchesSearch =
-      user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.event.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesType && matchesSearch;
-  });
+  const filteredEvents = registeredEvents.filter((event) =>
+    event.eventName[0].toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (name && userType && selectedEvent) {
-      const newUser = { name, type: userType, event: selectedEvent };
+    if (eventId) {
       try {
         const response = await fetch("/api/registrations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(newUser),
+          body: JSON.stringify({ eventId }),
         });
-        if (response.ok) {
-          const addedRegistration = await response.json();
-          setRegisteredUsers([...registeredUsers, addedRegistration]);
-          setName("");
-          setUserType("");
-          setSelectedEvent("");
-          setError(null);
-        } else {
-          throw new Error("Failed to add registration");
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || "Failed to register for event");
         }
+
+        const addedRegistration = await response.json();
+        setRegisteredEvents([...registeredEvents, addedRegistration]);
+        setEventId(null);
+        setError(null);
       } catch (error) {
         setError(error.message);
         console.error("Error adding registration:", error);
@@ -91,7 +82,7 @@ function Dashboard() {
 
   const handleClearRegistrations = async () => {
     const confirmed = window.confirm(
-      "Are you sure you want to clear all registrations? This action cannot be undone."
+      "Are you sure you want to clear all your registrations? This action cannot be undone."
     );
 
     if (confirmed) {
@@ -103,8 +94,8 @@ function Dashboard() {
         });
 
         if (response.ok) {
-          setRegisteredUsers([]);
-          alert("All registrations have been cleared successfully!");
+          setRegisteredEvents([]);
+          alert("All your registrations have been cleared successfully!");
         } else {
           const errorData = await response.json();
           throw new Error(errorData.message || "Failed to clear registrations");
@@ -121,11 +112,11 @@ function Dashboard() {
   };
 
   const exportToCSV = () => {
-    const headers = ["Name", "Type", "Event"];
+    const headers = ["Event ID", "Event Name"];
     const csvContent = [
       headers.join(","),
-      ...filteredUsers.map((user) =>
-        [user.name, user.type, user.event].join(",")
+      ...filteredEvents.map((event) =>
+        [event.eventId, event.eventName[0]].join(",")
       ),
     ].join("\n");
 
@@ -142,25 +133,8 @@ function Dashboard() {
     window.URL.revokeObjectURL(url);
   };
 
-  const getRegistrationStats = () => {
-    const stats = {
-      total: registeredUsers.length,
-      byType: {},
-      byEvent: {},
-    };
-
-    registeredUsers.forEach((user) => {
-      stats.byType[user.type] = (stats.byType[user.type] || 0) + 1;
-      stats.byEvent[user.event] = (stats.byEvent[user.event] || 0) + 1;
-    });
-
-    return stats;
-  };
-
-  const stats = getRegistrationStats();
-
-  const handleEventSelect = (eventName) => {
-    setSelectedEvent(eventName);
+  const handleEventSelect = (selectedEventId) => {
+    setEventId(selectedEventId);
     setIsEventDialogOpen(false);
   };
 
@@ -182,127 +156,63 @@ function Dashboard() {
       </nav>
 
       <main className="max-w-6xl mx-auto mt-8 p-6 space-y-6">
+        <div className="text-center">
+          <h1 className="text-4xl font-bold text-white mb-2">Welcome!</h1>
+          <p className="text-blue-100">Select an event below to register</p>
+        </div>
+
         {error && (
-          <div className="bg-red-500 text-white p-4 rounded-lg flex items-center gap-2">
-            <AlertCircle className="h-4 w-4" />
-            <p>{error}</p>
+          <div className="bg-red-500 text-white p-4 rounded-lg flex items-center gap-2 max-w-xl mx-auto">
+            <AlertCircle className="h-5 w-5 flex-shrink-0" />
+            <p className="text-sm">{error}</p>
           </div>
         )}
 
-        <div className="bg-blue-800 rounded-lg shadow-xl border-4 border-black p-6">
+        <div className="bg-blue-800 rounded-lg shadow-xl border-4 border-black p-6 max-w-xl mx-auto">
           <h2 className="text-3xl font-bold mb-6 text-center text-white">
-            Registration
+            Event Registration
           </h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label htmlFor="name" className="block mb-1 text-white">
-                  Name:
-                </label>
-                <input
-                  type="text"
-                  id="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 bg-blue-700 rounded text-white placeholder-blue-300"
-                  placeholder="Enter your name"
-                  required
-                />
-              </div>
-              <div>
-                <label htmlFor="userType" className="block mb-1 text-white">
-                  Type:
-                </label>
-                <select
-                  id="userType"
-                  value={userType}
-                  onChange={(e) => setUserType(e.target.value)}
-                  className="w-full px-3 py-2 bg-blue-700 rounded text-white"
-                  required
-                >
-                  <option value="">Select type</option>
-                  {userTypes.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block mb-1 text-white">Event:</label>
-                {isEventDialogOpen ? (
-                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-                    <div className="bg-blue-800 rounded-lg p-6 max-w-3xl max-h-[80vh] overflow-y-auto">
-                      <EventList onEventSelect={handleEventSelect} />
-                      <button
-                        onClick={() => setIsEventDialogOpen(false)}
-                        className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
-                      >
-                        Close
-                      </button>
-                    </div>
+            <div className="flex flex-col items-center">
+              <label className="block mb-2 text-lg text-white">
+                Select Event:
+              </label>
+              {isEventDialogOpen ? (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+                  <div className="bg-blue-800 rounded-lg p-6 max-w-3xl max-h-[80vh] overflow-y-auto">
+                    <EventList onEventSelect={handleEventSelect} />
+                    <button
+                      onClick={() => setIsEventDialogOpen(false)}
+                      className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+                    >
+                      Close
+                    </button>
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setIsEventDialogOpen(true)}
-                    className="w-full px-3 py-2 bg-blue-700 rounded text-white text-left"
-                  >
-                    {selectedEvent || "Select event"}
-                  </button>
-                )}
-              </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsEventDialogOpen(true)}
+                  className="w-full max-w-md px-6 py-3 bg-blue-700 rounded-lg text-white text-center hover:bg-blue-600 transition-colors"
+                >
+                  {eventId ? "Selected Event" : "Click to Select Event"}
+                </button>
+              )}
             </div>
             <button
               type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded"
+              disabled={!eventId}
+              className="w-full max-w-md mx-auto block bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Register
+              Register for Event
             </button>
           </form>
         </div>
 
         <div className="bg-blue-800 rounded-lg shadow-xl border-4 border-black p-6">
           <div className="flex flex-wrap justify-between items-center mb-4">
-            <h3 className="text-xl font-bold text-white">
-              Registration Overview
-            </h3>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setFilterType("all")}
-                className={`px-3 py-1 rounded ${
-                  filterType === "all"
-                    ? "bg-blue-500 text-white"
-                    : "bg-blue-700 text-white hover:bg-blue-600"
-                }`}
-              >
-                All ({stats.total})
-              </button>
-              {userTypes.map((type) => (
-                <button
-                  key={type}
-                  onClick={() => setFilterType(type)}
-                  className={`px-3 py-1 rounded ${
-                    filterType === type
-                      ? "bg-blue-500 text-white"
-                      : "bg-blue-700 text-white hover:bg-blue-600"
-                  }`}
-                >
-                  {type} ({stats.byType[type] || 0})
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="mb-4 flex gap-4">
-            <input
-              type="text"
-              placeholder="Search by name or event..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-1 px-3 py-2 bg-blue-700 rounded text-white placeholder-blue-300"
-            />
+            <h3 className="text-xl font-bold text-white">Your Registrations</h3>
             <button
               onClick={exportToCSV}
               className="flex items-center gap-2 bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded"
@@ -312,45 +222,55 @@ function Dashboard() {
             </button>
           </div>
 
+          <div className="mb-4">
+            <input
+              type="text"
+              placeholder="Search events..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-4 py-2 bg-blue-700 rounded text-white placeholder-blue-300"
+            />
+          </div>
+
           <div className="bg-blue-700 rounded overflow-hidden">
             <table className="w-full">
               <thead>
                 <tr className="bg-blue-600">
-                  <th className="px-4 py-2 text-left text-white">Name</th>
-                  <th className="px-4 py-2 text-left text-white">Type</th>
-                  <th className="px-4 py-2 text-left text-white">Event</th>
+                  <th className="px-4 py-2 text-left text-white">Event ID</th>
+                  <th className="px-4 py-2 text-left text-white">Event Name</th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
                   <tr>
                     <td
-                      colSpan="3"
+                      colSpan="2"
                       className="px-4 py-8 text-center text-white"
                     >
                       Loading...
                     </td>
                   </tr>
-                ) : filteredUsers.length === 0 ? (
+                ) : filteredEvents.length === 0 ? (
                   <tr>
                     <td
-                      colSpan="3"
+                      colSpan="2"
                       className="px-4 py-8 text-center text-white"
                     >
                       No registrations found
                     </td>
                   </tr>
                 ) : (
-                  filteredUsers.map((user, index) => (
+                  filteredEvents.map((event, index) => (
                     <tr
                       key={index}
                       className={
                         index % 2 === 0 ? "bg-blue-800" : "bg-blue-700"
                       }
                     >
-                      <td className="px-4 py-2 text-white">{user.name}</td>
-                      <td className="px-4 py-2 text-white">{user.type}</td>
-                      <td className="px-4 py-2 text-white">{user.event}</td>
+                      <td className="px-4 py-2 text-white">{event.eventId}</td>
+                      <td className="px-4 py-2 text-white">
+                        {event.eventName[0]}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -361,9 +281,9 @@ function Dashboard() {
           <div className="mt-4">
             <button
               onClick={handleClearRegistrations}
-              disabled={clearLoading || registeredUsers.length === 0}
+              disabled={clearLoading || registeredEvents.length === 0}
               className={`flex items-center gap-2 px-4 py-2 rounded text-white ${
-                registeredUsers.length === 0
+                registeredEvents.length === 0
                   ? "bg-gray-500 cursor-not-allowed"
                   : clearLoading
                   ? "bg-red-700 cursor-wait"
