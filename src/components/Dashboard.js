@@ -5,12 +5,15 @@ import EventList from "./EventList";
 
 function Dashboard() {
   const [eventId, setEventId] = useState(null);
+  const [teamName, setTeamName] = useState(""); // Changed from teamId to teamName to match backend
   const [registeredEvents, setRegisteredEvents] = useState([]);
   const [clearLoading, setClearLoading] = useState(false);
   const [isEventDialogOpen, setIsEventDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [teamMembers, setTeamMembers] = useState(["", ""]); // These will be student IDs
+  const [teamMemberErrors, setTeamMemberErrors] = useState(["", ""]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -37,36 +40,103 @@ function Dashboard() {
     }
   };
 
-  const filteredEvents = registeredEvents.filter((event) =>
-    event.eventName[0].toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  function formatDate(dateStr, timeStr) {
+    if (!dateStr) return "";
+    try {
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) return "";
+      return `${date.toLocaleDateString()} ${timeStr || ""}`.trim();
+    } catch (error) {
+      console.error("Error formatting date:", error);
+      return "";
+    }
+  }
+
+  const filteredEvents = registeredEvents.filter((event) => {
+    const eventName = Array.isArray(event.eventName)
+      ? event.eventName[0]
+      : typeof event.eventName === "string"
+      ? event.eventName
+      : "";
+    return eventName.toLowerCase().includes(searchQuery.toLowerCase());
+  });
+
+  const handleTeamMemberChange = (index, value) => {
+    const newTeamMembers = [...teamMembers];
+    newTeamMembers[index] = value;
+    setTeamMembers(newTeamMembers);
+
+    const newErrors = [...teamMemberErrors];
+    newErrors[index] = "";
+    setTeamMemberErrors(newErrors);
+  };
+
+  const handleTeamNameChange = (e) => {
+    const value = e.target.value;
+    setTeamName(value);
+  };
+
+  const validateTeamMembers = () => {
+    const newErrors = teamMembers.map((member) =>
+      !member ? "Student ID is required" : ""
+    );
+    setTeamMemberErrors(newErrors);
+    return !newErrors.some((error) => error);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (eventId) {
-      try {
-        const response = await fetch("/api/registrations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ eventId }),
-        });
+    if (!eventId || !teamName) {
+      setError("Please select an event and provide a team name");
+      return;
+    }
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.message || "Failed to register for event");
-        }
+    if (!validateTeamMembers()) {
+      setError("Please fill in all team member IDs");
+      return;
+    }
 
-        const addedRegistration = await response.json();
-        setRegisteredEvents([...registeredEvents, addedRegistration]);
-        setEventId(null);
-        setError(null);
-      } catch (error) {
-        setError(error.message);
-        console.error("Error adding registration:", error);
+    try {
+      console.log("Submitting registration with:", {
+        eventId,
+        teamName,
+        teamMembers: teamMembers.filter((id) => id.trim() !== ""),
+      });
+
+      const response = await fetch("/api/registrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventId,
+          teamName,
+          teamMembers: teamMembers.filter((id) => id.trim() !== ""),
+        }),
+        credentials: "include", // Add this to ensure cookies are sent
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Failed to register for event");
       }
+
+      const addedRegistration = await response.json();
+      console.log("Registration successful:", addedRegistration);
+      setRegisteredEvents((prev) => [...prev, addedRegistration]);
+      setEventId(null);
+      setTeamName("");
+      setTeamMembers(["", ""]);
+      setError(null);
+      alert(
+        "Team registration successful! Confirmation emails have been sent."
+      );
+
+      // Refresh the registrations list
+      fetchRegistrations();
+    } catch (error) {
+      setError(error.message);
+      console.error("Error adding registration:", error);
     }
   };
-
   const handleLogout = async () => {
     try {
       const response = await fetch("/api/logout", { method: "POST" });
@@ -112,11 +182,25 @@ function Dashboard() {
   };
 
   const exportToCSV = () => {
-    const headers = ["Event ID", "Event Name"];
+    const headers = [
+      "Event Name",
+      "Date",
+      "Time",
+      "Venue",
+      "Team ID",
+      "Team Members",
+    ];
     const csvContent = [
       headers.join(","),
       ...filteredEvents.map((event) =>
-        [event.eventId, event.eventName[0]].join(",")
+        [
+          event.eventName,
+          new Date(event.eventDate).toLocaleDateString(),
+          event.eventTime,
+          event.venue,
+          event.teamId,
+          event.teamMembers.map((member) => member.studentId).join("; "),
+        ].join(",")
       ),
     ].join("\n");
 
@@ -170,7 +254,7 @@ function Dashboard() {
 
         <div className="bg-blue-800 rounded-lg shadow-xl border-4 border-black p-6 max-w-xl mx-auto">
           <h2 className="text-3xl font-bold mb-6 text-center text-white">
-            Event Registration
+            Team Registration
           </h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -200,12 +284,47 @@ function Dashboard() {
                 </button>
               )}
             </div>
+            <div className="space-y-1">
+              <label className="block text-lg text-white">Team Name:</label>
+              <input
+                type="text"
+                value={teamName}
+                onChange={handleTeamNameChange}
+                placeholder="Enter team name"
+                className="w-full px-3 py-2 bg-white border border-blue-300 rounded-md"
+                required
+              />
+            </div>
+            <div className="space-y-4">
+              <label className="block text-lg text-white">
+                Team Members (Student IDs):
+              </label>
+              {teamMembers.map((member, index) => (
+                <div key={index} className="space-y-1">
+                  <input
+                    type="text"
+                    value={member}
+                    onChange={(e) =>
+                      handleTeamMemberChange(index, e.target.value)
+                    }
+                    placeholder={`Team Member ${index + 1} Student ID`}
+                    className="w-full px-3 py-2 bg-white border border-blue-300 rounded-md"
+                  />
+                  {teamMemberErrors[index] && (
+                    <p className="text-red-400 text-sm">
+                      {teamMemberErrors[index]}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+
             <button
               type="submit"
-              disabled={!eventId}
+              disabled={!eventId || !teamName}
               className="w-full max-w-md mx-auto block bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Register for Event
+              Register Team for Event
             </button>
           </form>
         </div>
@@ -236,15 +355,22 @@ function Dashboard() {
             <table className="w-full">
               <thead>
                 <tr className="bg-blue-600">
-                  <th className="px-4 py-2 text-left text-white">Event ID</th>
                   <th className="px-4 py-2 text-left text-white">Event Name</th>
+                  <th className="px-4 py-2 text-left text-white">
+                    Date & Time
+                  </th>
+                  <th className="px-4 py-2 text-left text-white">Venue</th>
+                  <th className="px-4 py-2 text-left text-white">Team ID</th>
+                  <th className="px-4 py-2 text-left text-white">
+                    Team Members
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
                   <tr>
                     <td
-                      colSpan="2"
+                      colSpan="5"
                       className="px-4 py-8 text-center text-white"
                     >
                       Loading...
@@ -253,26 +379,48 @@ function Dashboard() {
                 ) : filteredEvents.length === 0 ? (
                   <tr>
                     <td
-                      colSpan="2"
+                      colSpan="5"
                       className="px-4 py-8 text-center text-white"
                     >
                       No registrations found
                     </td>
                   </tr>
                 ) : (
-                  filteredEvents.map((event, index) => (
-                    <tr
-                      key={index}
-                      className={
-                        index % 2 === 0 ? "bg-blue-800" : "bg-blue-700"
-                      }
-                    >
-                      <td className="px-4 py-2 text-white">{event.eventId}</td>
-                      <td className="px-4 py-2 text-white">
-                        {event.eventName[0]}
-                      </td>
-                    </tr>
-                  ))
+                  filteredEvents.map((event, index) => {
+                    const eventName = Array.isArray(event.eventName)
+                      ? event.eventName[0]
+                      : event.eventName;
+
+                    const dateTimeStr =
+                      event.eventDate && event.eventTime
+                        ? `${event.eventDate} ${event.eventTime}`
+                        : "Date not available";
+                    const teamMembersStr =
+                      event.teamMembers && event.teamMembers.length > 0
+                        ? event.teamMembers
+                            .filter((member) => member.studentId)
+                            .map((member) => member.studentId)
+                            .join(", ")
+                        : "No team members";
+
+                    return (
+                      <tr
+                        key={index}
+                        className={
+                          index % 2 === 0 ? "bg-blue-800" : "bg-blue-700"
+                        }
+                      >
+                        <td className="px-4 py-2 text-white">{eventName}</td>
+                        <td className="px-4 py-2 text-white">{dateTimeStr}</td>
+                        <td className="px-4 py-2 text-white">
+                          {event.venue || "Venue not specified"}
+                        </td>
+                        <td className="px-4 py-2 text-white">
+                          {teamMembersStr}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

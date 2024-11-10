@@ -27,7 +27,24 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
-
+// Add this helper function for email sending
+const sendRegistrationEmail = async (email, eventName, teamName, role) => {
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: `Team Registration Confirmation - ${eventName}`,
+      html: `
+        <h1>Team Registration Confirmation</h1>
+        <p>You have been registered for ${eventName} as part of team "${teamName}".</p>
+        <p>Your role: ${role}</p>
+        <p>Please arrive on time for the event.</p>
+      `,
+    });
+  } catch (error) {
+    console.error("Error sending registration email:", error);
+  }
+};
 // CORS configuration
 app.use(
   cors({
@@ -296,78 +313,137 @@ app.get("/api/events", async (req, res) => {
   }
 });
 // Registration routes
+// POST endpoint
 app.post("/api/registrations", async (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ message: "Not authenticated" });
   }
 
-  const { eventId } = req.body;
+  const { eventId, teamName, teamMembers } = req.body;
   const username = req.session.user.username;
+
+  // Validate team members array
+  if (!Array.isArray(teamMembers) || teamMembers.length !== 2) {
+    return res.status(400).json({
+      message: "Please provide exactly 2 team members",
+    });
+  }
 
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
-    // Check if student exists and get their ID
-    const studentResult = await client.query(
-      'SELECT id FROM "Student" WHERE name = $1',
+    // Get leader's student ID
+    const leaderResult = await client.query(
+      'SELECT id, email FROM "Student" s WHERE s.name = $1',
       [username]
     );
 
-    if (studentResult.rows.length === 0) {
+    if (leaderResult.rows.length === 0) {
       throw new Error("Student not found");
     }
 
-    const studentId = studentResult.rows[0].id;
+    const leaderId = leaderResult.rows[0].id;
+    const leaderEmail = leaderResult.rows[0].email;
 
-    // Check if event exists and get its details
-    const eventResult = await client.query(
-      'SELECT "eventName" FROM "Event" WHERE id = $1',
-      [eventId]
+    // Verify team members exist
+    const memberResults = await Promise.all(
+      teamMembers.map((memberId) =>
+        client.query('SELECT id, email FROM "Student" WHERE id = $1', [
+          memberId,
+        ])
+      )
     );
 
-    if (eventResult.rows.length === 0) {
-      throw new Error("Event not found");
-    }
+    // Validate all members exist
+    memberResults.forEach((result, index) => {
+      if (result.rows.length === 0) {
+        throw new Error(`Team member ${teamMembers[index]} not found`);
+      }
+    });
 
-    // Check if already registered
-    const existingReg = await client.query(
-      'SELECT id FROM "Registration" WHERE "studentId" = $1 AND "eventId" = $2',
-      [studentId, eventId]
+    // Create team
+    const teamResult = await client.query(
+      'INSERT INTO "Team" ("teamName", "eventId") VALUES ($1, $2) RETURNING id',
+      [teamName, eventId]
     );
 
-    if (existingReg.rows.length > 0) {
-      throw new Error("Already registered for this event");
-    }
+    const teamId = teamResult.rows[0].id;
 
-    // Create registration with properly formatted array
+    // Add team members including the leader
+    await client.query(
+      'INSERT INTO "TeamMember" ("studentId", "teamId") VALUES ($1, $2)',
+      [leaderId, teamId]
+    );
+
+    // Add other team members
+    await Promise.all(
+      teamMembers.map((memberId) =>
+        client.query(
+          'INSERT INTO "TeamMember" ("studentId", "teamId") VALUES ($1, $2)',
+          [memberId, teamId]
+        )
+      )
+    );
+
+    // Create registration
     const result = await client.query(
-      'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, $3) RETURNING *',
-      [studentId, eventId, `{${eventResult.rows[0].eventName}}`] // Format as PostgreSQL array
+      'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, (SELECT "eventName" FROM "Event" WHERE id = $2)) RETURNING *',
+      [leaderId, eventId]
     );
 
     await client.query("COMMIT");
 
-    // Return registration with event details
-    const registration = {
-      ...result.rows[0],
-      event: eventResult.rows[0],
-    };
+    // Send confirmation emails
+    try {
+      await Promise.all([
+        // Leader email
+        transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: leaderEmail,
+          subject: `Team Registration Confirmation - ${teamName}`,
+          html: `
+            <h1>Team Registration Confirmation</h1>
+            <p>Your team "${teamName}" has been registered successfully.</p>
+            <p>Team Members: ${teamMembers.join(", ")}</p>
+          `,
+        }),
+        // Team members emails
+        ...memberResults.map((result) =>
+          transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: result.rows[0].email,
+            subject: `Team Registration Confirmation - ${teamName}`,
+            html: `
+              <h1>Team Registration Confirmation</h1>
+              <p>You have been added to team "${teamName}" by ${username}.</p>
+            `,
+          })
+        ),
+      ]);
+    } catch (emailError) {
+      console.error("Error sending emails:", emailError);
+    }
 
-    console.log("Registration successful:", registration);
-    res.status(201).json(registration);
+    res.status(201).json({
+      ...result.rows[0],
+      teamName,
+      teamId,
+      teamMembers: [leaderId, ...teamMembers],
+    });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error in registration:", error);
     res.status(400).json({
-      message: error.message || "Failed to register for event",
+      message: error.message || "Failed to register team for event",
     });
   } finally {
     client.release();
   }
 });
 
+// GET endpoint
 app.get("/api/registrations", async (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ message: "Not authenticated" });
@@ -376,28 +452,50 @@ app.get("/api/registrations", async (req, res) => {
   const username = req.session.user.username;
 
   try {
-    // Join with Event table and Student table to get all details
     const result = await pool.query(
       `SELECT 
         r.id,
         r."eventId",
-        r."eventName"[1] as "eventName", -- Extract first element of the array
+        r."eventName"[1] as "eventName",
         e."eventDate",
         e."eventTime",
-        e.venue
+        e.venue,
+        t.id as "teamId",
+        t."teamName",
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'studentId', s2.id,
+              'name', s2.name,
+              'email', s2.email,
+              'role', tm.role
+            )
+          ) FILTER (WHERE s2.id IS NOT NULL),
+          '[]'
+        ) as "teamMembers"
        FROM "Registration" r
        JOIN "Event" e ON e.id = r."eventId"
        JOIN "Student" s ON s.id = r."studentId"
+       JOIN "Team" t ON t."eventId" = r."eventId"
+       LEFT JOIN "TeamMember" tm ON tm."teamId" = t.id
+       LEFT JOIN "Student" s2 ON s2.id = tm."studentId"
        WHERE s.name = $1
-       ORDER BY e."eventDate", e."eventTime"`,
+       GROUP BY r.id, r."eventId", r."eventName", e."eventDate", e."eventTime", e.venue, t.id, t."teamName"
+       ORDER BY e."eventDate" DESC NULLS LAST, e."eventTime" ASC NULLS LAST`,
       [username]
     );
 
-    console.log(
-      `Fetched ${result.rows.length} registrations for user: ${username}`
-    );
+    const formattedResults = result.rows.map((row) => ({
+      ...row,
+      eventDate: row.eventDate
+        ? new Date(row.eventDate).toISOString().split("T")[0]
+        : "Date not available",
+      eventTime: row.eventTime || "Time not available",
+      venue: row.venue || "Venue not specified",
+      teamMembers: row.teamMembers.length ? row.teamMembers : "No team members",
+    }));
 
-    res.json(result.rows);
+    res.json(formattedResults);
   } catch (error) {
     console.error("Error fetching registrations:", error);
     res.status(500).json({
@@ -406,7 +504,6 @@ app.get("/api/registrations", async (req, res) => {
     });
   }
 });
-
 app.post("/api/registrations/clear", async (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ message: "Not authenticated" });
