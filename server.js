@@ -37,7 +37,6 @@ const sendRegistrationEmail = async (email, eventName, teamName, role) => {
       html: `
         <h1>Team Registration Confirmation</h1>
         <p>You have been registered for ${eventName} as part of team "${teamName}".</p>
-        <p>Your role: ${role}</p>
         <p>Please arrive on time for the event.</p>
       `,
     });
@@ -54,6 +53,45 @@ app.use(
     credentials: true, // Important for cookies/session handling
   })
 );
+async function withTransaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await callback(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+const validateRegistration = (req, res, next) => {
+  const { eventId, teamName, teamMembers } = req.body;
+
+  if (!eventId || typeof eventId !== "number") {
+    return res.status(400).json({ message: "Invalid event ID" });
+  }
+
+  if (!teamName || typeof teamName !== "string" || teamName.length < 3) {
+    return res
+      .status(400)
+      .json({ message: "Team name must be at least 3 characters long" });
+  }
+
+  if (!Array.isArray(teamMembers) || teamMembers.length !== 2) {
+    return res
+      .status(400)
+      .json({ message: "Please provide exactly 2 team members" });
+  }
+
+  if (!teamMembers.every((id) => typeof id === "number")) {
+    return res.status(400).json({ message: "Invalid team member IDs" });
+  }
+
+  next();
+};
 
 // Middleware
 app.use(express.json());
@@ -314,6 +352,8 @@ app.get("/api/events", async (req, res) => {
 });
 // Registration routes
 // POST endpoint
+// Registration route for team events
+// POST /api/registrations
 app.post("/api/registrations", async (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ message: "Not authenticated" });
@@ -322,21 +362,12 @@ app.post("/api/registrations", async (req, res) => {
   const { eventId, teamName, teamMembers } = req.body;
   const username = req.session.user.username;
 
-  // Validate team members array
-  if (!Array.isArray(teamMembers) || teamMembers.length !== 2) {
-    return res.status(400).json({
-      message: "Please provide exactly 2 team members",
-    });
-  }
-
-  const client = await pool.connect();
-
   try {
-    await client.query("BEGIN");
+    await pool.query("BEGIN");
 
-    // Get leader's student ID
-    const leaderResult = await client.query(
-      'SELECT id, email FROM "Student" s WHERE s.name = $1',
+    // Get leader's information
+    const leaderResult = await pool.query(
+      'SELECT id, email FROM "Student" WHERE name = $1',
       [username]
     );
 
@@ -347,106 +378,119 @@ app.post("/api/registrations", async (req, res) => {
     const leaderId = leaderResult.rows[0].id;
     const leaderEmail = leaderResult.rows[0].email;
 
-    // Verify team members exist
-    const memberResults = await Promise.all(
-      teamMembers.map((memberId) =>
-        client.query('SELECT id, email FROM "Student" WHERE id = $1', [
-          memberId,
-        ])
-      )
+    // Check if event exists
+    const eventResult = await pool.query(
+      'SELECT "eventName" FROM "Event" WHERE id = $1',
+      [eventId]
     );
 
-    // Validate all members exist
-    memberResults.forEach((result, index) => {
-      if (result.rows.length === 0) {
-        throw new Error(`Team member ${teamMembers[index]} not found`);
+    if (eventResult.rows.length === 0) {
+      throw new Error("Event not found");
+    }
+
+    const eventName = eventResult.rows[0].eventName;
+
+    // Create registration for the team leader
+    const leaderRegistration = await pool.query(
+      'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, $3) RETURNING *',
+      [leaderId, eventId, `{${eventName}}`]
+    );
+
+    // Create a new team
+    const newTeamResult = await pool.query(
+      'INSERT INTO "Team" ("eventId", "teamName") VALUES ($1, $2) RETURNING id',
+      [eventId, teamName]
+    );
+
+    const teamId = newTeamResult.rows[0].id;
+
+    // Create registrations for team members
+    for (const memberId of teamMembers) {
+      // Check if member is a valid student
+      const memberResult = await pool.query(
+        'SELECT id FROM "Student" WHERE id = $1',
+        [memberId]
+      );
+
+      if (memberResult.rows.length === 0) {
+        throw new Error(`Student with ID ${memberId} not found`);
       }
-    });
 
-    // Create team
-    const teamResult = await client.query(
-      'INSERT INTO "Team" ("teamName", "eventId") VALUES ($1, $2) RETURNING id',
-      [teamName, eventId]
-    );
+      // Create registration for the team member
+      await pool.query(
+        'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, $3)',
+        [memberId, eventId, `{${eventName}}`]
+      );
 
-    const teamId = teamResult.rows[0].id;
+      // Add the team member to the team
+      await pool.query(
+        'INSERT INTO "TeamMember" ("teamId", "studentId") VALUES ($1, $2)',
+        [teamId, memberId]
+      );
+    }
 
-    // Add team members including the leader
-    await client.query(
-      'INSERT INTO "TeamMember" ("studentId", "teamId") VALUES ($1, $2)',
-      [leaderId, teamId]
-    );
-
-    // Add other team members
-    await Promise.all(
-      teamMembers.map((memberId) =>
-        client.query(
-          'INSERT INTO "TeamMember" ("studentId", "teamId") VALUES ($1, $2)',
-          [memberId, teamId]
-        )
-      )
-    );
-
-    // Create registration
-    const result = await client.query(
-      'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, (SELECT "eventName" FROM "Event" WHERE id = $2)) RETURNING *',
-      [leaderId, eventId]
-    );
-
-    await client.query("COMMIT");
+    await pool.query("COMMIT");
 
     // Send confirmation emails
     try {
-      await Promise.all([
-        // Leader email
-        transporter.sendMail({
+      await transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: leaderEmail,
+        subject: `Team Registration Confirmation - ${teamName}`,
+        html: `
+          <h1>Team Registration Confirmation</h1>
+          <p>Your team "${teamName}" has been registered successfully for event "${eventName}".</p>
+          <p>You have been registered as the team leader.</p>
+        `,
+      });
+
+      for (const memberId of teamMembers) {
+        const memberEmail = (
+          await pool.query('SELECT email FROM "Student" WHERE id = $1', [
+            memberId,
+          ])
+        ).rows[0].email;
+
+        await transporter.sendMail({
           from: process.env.EMAIL_USER,
-          to: leaderEmail,
+          to: memberEmail,
           subject: `Team Registration Confirmation - ${teamName}`,
           html: `
             <h1>Team Registration Confirmation</h1>
-            <p>Your team "${teamName}" has been registered successfully.</p>
-            <p>Team Members: ${teamMembers.join(", ")}</p>
+            <p>You have been added to team "${teamName}" by ${username} for event "${eventName}".</p>
           `,
-        }),
-        // Team members emails
-        ...memberResults.map((result) =>
-          transporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: result.rows[0].email,
-            subject: `Team Registration Confirmation - ${teamName}`,
-            html: `
-              <h1>Team Registration Confirmation</h1>
-              <p>You have been added to team "${teamName}" by ${username}.</p>
-            `,
-          })
-        ),
-      ]);
+        });
+      }
     } catch (emailError) {
-      console.error("Error sending emails:", emailError);
+      console.error("Error sending confirmation emails:", emailError);
     }
 
     res.status(201).json({
-      ...result.rows[0],
-      teamName,
-      teamId,
-      teamMembers: [leaderId, ...teamMembers],
+      message: "Team registration successful",
+      registration: {
+        ...leaderRegistration.rows[0],
+        teamId,
+        teamName,
+        teamMembers: [leaderId, ...teamMembers],
+      },
     });
   } catch (error) {
-    await client.query("ROLLBACK");
-    console.error("Error in registration:", error);
+    await pool.query("ROLLBACK");
+    console.error("Error in team registration:", error);
     res.status(400).json({
-      message: error.message || "Failed to register team for event",
+      message: error.message || "Registration failed",
+      error: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
-  } finally {
-    client.release();
   }
 });
 
-// GET endpoint
+// GET /api/registrations
 app.get("/api/registrations", async (req, res) => {
   if (!req.session.user) {
-    return res.status(401).json({ message: "Not authenticated" });
+    return res.status(401).json({
+      message: "Not authenticated",
+      registrations: [],
+    });
   }
 
   const username = req.session.user.username;
@@ -456,51 +500,50 @@ app.get("/api/registrations", async (req, res) => {
       `SELECT 
         r.id,
         r."eventId",
-        r."eventName"[1] as "eventName",
-        e."eventDate",
+        e."eventName",
+        e."eventDate", 
         e."eventTime",
         e.venue,
         t.id as "teamId",
         t."teamName",
-        COALESCE(
-          json_agg(
-            json_build_object(
-              'studentId', s2.id,
-              'name', s2.name,
-              'email', s2.email,
-              'role', tm.role
-            )
-          ) FILTER (WHERE s2.id IS NOT NULL),
-          '[]'
-        ) as "teamMembers"
-       FROM "Registration" r
-       JOIN "Event" e ON e.id = r."eventId"
-       JOIN "Student" s ON s.id = r."studentId"
-       JOIN "Team" t ON t."eventId" = r."eventId"
-       LEFT JOIN "TeamMember" tm ON tm."teamId" = t.id
-       LEFT JOIN "Student" s2 ON s2.id = tm."studentId"
-       WHERE s.name = $1
-       GROUP BY r.id, r."eventId", r."eventName", e."eventDate", e."eventTime", e.venue, t.id, t."teamName"
-       ORDER BY e."eventDate" DESC NULLS LAST, e."eventTime" ASC NULLS LAST`,
+        array_agg(tm."studentId") as "teamMembers"
+      FROM "Registration" r
+      JOIN "Student" s ON s.id = r."studentId"
+      LEFT JOIN "Event" e ON e.id = r."eventId"
+      LEFT JOIN "TeamMember" tm ON tm."studentId" = r."studentId"
+      LEFT JOIN "Team" t ON t.id = tm."teamId" AND t."eventId" = r."eventId"
+      WHERE s.name = $1
+      GROUP BY r.id, e."eventName", e."eventDate", e."eventTime", e.venue, t.id, t."teamName"
+      ORDER BY e."eventDate" DESC NULLS LAST, e."eventTime" ASC NULLS LAST`,
       [username]
     );
 
     const formattedResults = result.rows.map((row) => ({
-      ...row,
+      id: row.id,
+      eventId: row.eventId,
+      eventName: row.eventName,
       eventDate: row.eventDate
-        ? new Date(row.eventDate).toISOString().split("T")[0]
+        ? row.eventDate.toISOString().split("T")[0]
         : "Date not available",
-      eventTime: row.eventTime || "Time not available",
+      eventTime: row.eventTime
+        ? row.eventTime.toString().slice(0, 5)
+        : "Time not available",
       venue: row.venue || "Venue not specified",
-      teamMembers: row.teamMembers.length ? row.teamMembers : "No team members",
+      teamId: row.teamId,
+      teamName: row.teamName,
+      teamMembers: row.teamMembers,
     }));
 
-    res.json(formattedResults);
+    res.json({
+      registrations: formattedResults,
+      message: "Registrations fetched successfully",
+    });
   } catch (error) {
     console.error("Error fetching registrations:", error);
     res.status(500).json({
       message: "Failed to fetch registrations",
-      details: error.message,
+      registrations: [],
+      error: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 });
@@ -509,14 +552,15 @@ app.post("/api/registrations/clear", async (req, res) => {
     return res.status(401).json({ message: "Not authenticated" });
   }
 
-  const studentId = req.session.user.studentId;
+  const username = req.session.user.username;
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query('DELETE FROM "Registration" WHERE "studentId" = $1', [
-      studentId,
-    ]);
+    await client.query(
+      'DELETE FROM "Registration" WHERE "studentId" = (SELECT id FROM "Student" WHERE name = $1)',
+      [username]
+    );
     await client.query("COMMIT");
     res.json({ message: "All your registrations cleared successfully" });
   } catch (error) {
