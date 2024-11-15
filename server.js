@@ -390,11 +390,47 @@ app.post("/api/registrations", async (req, res) => {
 
     const eventName = eventResult.rows[0].eventName;
 
-    // Create registration for the team leader
-    const leaderRegistration = await pool.query(
-      'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, $3) RETURNING *',
-      [leaderId, eventId, `{${eventName}}`]
+    // Validate unique team members
+    const uniqueMembers = new Set(teamMembers);
+    if (uniqueMembers.size !== teamMembers.length) {
+      throw new Error("Duplicate team members are not allowed");
+    }
+
+    // Check if any team member is already in a team for this event
+    const existingTeamMembers = await pool.query(
+      `SELECT tm."studentId" 
+       FROM "TeamMember" tm 
+       JOIN "Team" t ON tm."teamId" = t.id 
+       WHERE t."eventId" = $1 
+       AND tm."studentId" = ANY($2)`,
+      [eventId, [leaderId, ...teamMembers]]
     );
+
+    if (existingTeamMembers.rows.length > 0) {
+      const existingIds = existingTeamMembers.rows.map((row) => row.studentId);
+      throw new Error(
+        `Students with IDs ${existingIds.join(
+          ", "
+        )} are already in a team for this event`
+      );
+    }
+
+    // Check if any team member is already registered for this event
+    const existingRegistrations = await pool.query(
+      'SELECT "studentId" FROM "Registration" WHERE "eventId" = $1 AND "studentId" = ANY($2)',
+      [eventId, [leaderId, ...teamMembers]]
+    );
+
+    if (existingRegistrations.rows.length > 0) {
+      const existingIds = existingRegistrations.rows.map(
+        (row) => row.studentId
+      );
+      throw new Error(
+        `Students with IDs ${existingIds.join(
+          ", "
+        )} are already registered for this event`
+      );
+    }
 
     // Create a new team
     const newTeamResult = await pool.query(
@@ -404,11 +440,22 @@ app.post("/api/registrations", async (req, res) => {
 
     const teamId = newTeamResult.rows[0].id;
 
-    // Create registrations for team members
+    // Create registration and team membership for the leader
+    await pool.query(
+      'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, $3)',
+      [leaderId, eventId, `{${eventName}}`]
+    );
+
+    await pool.query(
+      'INSERT INTO "TeamMember" ("teamId", "studentId") VALUES ($1, $2)',
+      [teamId, leaderId]
+    );
+
+    // Process team members
     for (const memberId of teamMembers) {
-      // Check if member is a valid student
+      // Verify student exists
       const memberResult = await pool.query(
-        'SELECT id FROM "Student" WHERE id = $1',
+        'SELECT id, email FROM "Student" WHERE id = $1',
         [memberId]
       );
 
@@ -416,13 +463,13 @@ app.post("/api/registrations", async (req, res) => {
         throw new Error(`Student with ID ${memberId} not found`);
       }
 
-      // Create registration for the team member
+      // Create registration for team member
       await pool.query(
         'INSERT INTO "Registration" ("studentId", "eventId", "eventName") VALUES ($1, $2, $3)',
         [memberId, eventId, `{${eventName}}`]
       );
 
-      // Add the team member to the team
+      // Add to TeamMember
       await pool.query(
         'INSERT INTO "TeamMember" ("teamId", "studentId") VALUES ($1, $2)',
         [teamId, memberId]
@@ -467,12 +514,9 @@ app.post("/api/registrations", async (req, res) => {
 
     res.status(201).json({
       message: "Team registration successful",
-      registration: {
-        ...leaderRegistration.rows[0],
-        teamId,
-        teamName,
-        teamMembers: [leaderId, ...teamMembers],
-      },
+      teamId,
+      teamName,
+      teamMembers: [leaderId, ...teamMembers],
     });
   } catch (error) {
     await pool.query("ROLLBACK");
@@ -483,7 +527,6 @@ app.post("/api/registrations", async (req, res) => {
     });
   }
 });
-
 // GET /api/registrations
 app.get("/api/registrations", async (req, res) => {
   if (!req.session.user) {

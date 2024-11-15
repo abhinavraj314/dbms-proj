@@ -371,32 +371,29 @@ function Dashboard() {
                   </th>
                   <th className="px-4 py-2 text-left text-white">Venue</th>
                   <th className="px-4 py-2 text-left text-white">Team Name</th>
-                  <th className="px-4 py-2 text-left text-white">
-                    Team Members
-                  </th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
                   <tr>
                     <td
-                      colSpan="5"
+                      colSpan="4"
                       className="px-4 py-8 text-center text-white"
                     >
                       Loading...
                     </td>
                   </tr>
-                ) : registeredEvents.length === 0 ? (
+                ) : filteredEvents.length === 0 ? (
                   <tr>
                     <td
-                      colSpan="5"
+                      colSpan="4"
                       className="px-4 py-8 text-center text-white"
                     >
                       No registrations found
                     </td>
                   </tr>
                 ) : (
-                  registeredEvents.map((event, index) => (
+                  filteredEvents.map((event, index) => (
                     <tr
                       key={index}
                       className={
@@ -412,11 +409,6 @@ function Dashboard() {
                       <td className="px-4 py-2 text-white">{event.venue}</td>
                       <td className="px-4 py-2 text-white">
                         {event.teamName || "N/A"}
-                      </td>
-                      <td className="px-4 py-2 text-white">
-                        {event.teamMembers
-                          ? event.teamMembers.join(", ")
-                          : "N/A"}
                       </td>
                     </tr>
                   ))
